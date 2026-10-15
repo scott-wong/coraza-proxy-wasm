@@ -21,6 +21,9 @@ import (
 func init() {
 	operators.Register()
 	auditlog.RegisterProxyWasmSerialWriter()
+	// Overrides coraza's "json" audit-log formatter with a TinyGo-safe one that
+	// produces identical output; see internal/auditlog/json_safe.go.
+	auditlog.RegisterProxyWasmJSONFormatter()
 	proxywasm.SetVMContext(wasmplugin.NewVMContext())
 }
 

@@ -1,0 +1,192 @@
+name: Release
+
+# Builds the filter, runs the quality gate and publishes a GitHub release with
+# the wasm, all from the single run that passed the gate (so the published
+# artifact is always the artifact that was verified).
+#
+#   gh workflow run release.yml -f version=v0.7.0
+#
+# The tag is created by this workflow, after the gate, from the dispatched ref.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to create, e.g. v0.7.0'
+        required: true
+        type: string
+      publish:
+        description: 'Publish the release (unchecked keeps it as a draft)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  GO_VERSION: '1.25.14'
+  TINYGO_VERSION: 0.39.0
+  # TinyGo's wasi-legacy build mode post-processes with wasm-opt.
+  BINARYEN_VERSION: version_133
+
+jobs:
+  quality:
+    name: "Quality gate (multiphase evaluation: ${{ matrix.multiphase_eval }})"
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        multiphase_eval: ["true","false"]
+    env:
+      MULTIPHASE_EVAL: ${{ matrix.multiphase_eval }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install TinyGo
+        run: |
+          gh release download v${TINYGO_VERSION} -p '*.linux-amd64.tar.gz' -D ~ -R github.com/tinygo-org/tinygo
+          tar -xf ~/tinygo${TINYGO_VERSION}.linux-amd64.tar.gz  -C $HOME
+          echo "$HOME/tinygo/bin" >> $GITHUB_PATH
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install binaryen (wasm-opt)
+        run: |
+          curl -sSL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-${BINARYEN_VERSION}/bin" >> $GITHUB_PATH
+
+      - name: Cache TinyGo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/tinygo
+          key: ${{ runner.os }}-tinygo-${{ env.TINYGO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-tinygo-${{ env.TINYGO_VERSION }}-
+
+      - name: Run code checks
+        run: go run mage.go lint
+
+      - name: Build WASM filter
+        run: go run mage.go build
+
+      - name: Run unit tests
+        run: go run mage.go coverage
+
+      - name: Run regression tests (ftw, Envoy)
+        run: go run mage.go ftw
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ftw-envoy-logs-multiphase-${{ matrix.multiphase_eval }}
+          path: build/ftw-envoy.log
+
+      # The released artifact is the default (multiphase evaluation enabled)
+      # build, matching the plugin's default configuration.
+      - name: Upload wasm
+        if: matrix.multiphase_eval == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coraza-proxy-wasm
+          path: build/main.wasm
+          if-no-files-found: error
+
+  release:
+    needs: quality
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "version must look like v0.7.0, got: $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download wasm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coraza-proxy-wasm
+          path: build
+
+      - name: Package wasm
+        run: |
+          mv build/main.wasm build/coraza-proxy-wasm.wasm
+          zip -j "build/coraza-proxy-wasm-${VERSION}.zip" build/coraza-proxy-wasm.wasm
+          (cd build && sha256sum coraza-proxy-wasm.wasm "coraza-proxy-wasm-${VERSION}.zip" > sha256sums.txt)
+          cat build/sha256sums.txt
+
+      - name: Write release notes
+        run: |
+          coraza_version=$(go list -m -f '{{.Version}}' github.com/corazawaf/coraza/v3)
+          crs_version=$(grep -o 'OWASP_CRS/[0-9.]*' wasmplugin/rules/crs/REQUEST-901-INITIALIZATION.conf | head -1)
+          baseline=$(git rev-parse HEAD)
+
+          cat > notes.md <<EOF
+          WASM build of [coraza-proxy-wasm](https://github.com/${GITHUB_REPOSITORY}) with coraza ${coraza_version}.
+
+          | | |
+          |---|---|
+          | Upstream baseline | \`${baseline}\` |
+          | coraza/v3 | \`${coraza_version}\` |
+          | OWASP CRS | \`${crs_version}\` |
+          | Toolchain | Go ${GO_VERSION}, TinyGo ${TINYGO_VERSION} |
+          | Verified by | [quality gate run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) (lint, unit tests, go-ftw against Envoy) |
+
+          Attachments:
+
+          * \`coraza-proxy-wasm.wasm\` – the filter, default configuration (multiphase evaluation enabled)
+          * \`coraza-proxy-wasm-${VERSION}.zip\` – the same file, zipped
+          * \`sha256sums.txt\` – checksums of both
+
+          ### Build notes
+
+          * Same Envoy-facing behaviour as upstream, built from the vendored
+            cre2/libinjection archives so that \`@rx\`/\`@pm\`/\`@detectXSS\` keep
+            their C engines under TinyGo ${TINYGO_VERSION}.
+          * The JSON audit log formatter is provided by this fork (identical
+            output to coraza's): the stock formatter cannot run under this
+            TinyGo version, where \`encoding/json\` traps the module.
+          EOF
+          cat notes.md
+
+      - name: Create tag
+        run: |
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          args=(--title "$VERSION" --notes-file notes.md --verify-tag)
+          if [ "${{ inputs.publish }}" != "true" ]; then
+            args+=(--draft)
+          else
+            args+=(--latest)
+          fi
+          gh release create "$VERSION" "${args[@]}" \
+            build/coraza-proxy-wasm.wasm \
+            "build/coraza-proxy-wasm-${VERSION}.zip" \
+            build/sha256sums.txt
