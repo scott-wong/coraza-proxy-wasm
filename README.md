@@ -31,10 +31,42 @@ Targets:
 
 Building the filter requires:
 
-- [Go](https://go.dev/doc/install)
-- [TinyGo](https://tinygo.org/getting-started/install/) `0.34.0`. Note: higher versions are currently not supported.
+- [Go](https://go.dev/doc/install) `1.25.x` (coraza v3.8.1 declares `go 1.25.0`)
+- [TinyGo](https://tinygo.org/getting-started/install/) `0.39.0`. Note: this fork is pinned to 0.39.0, see [Toolchain pinning](#toolchain-pinning).
+- [binaryen](https://github.com/WebAssembly/binaryen/releases) (`wasm-opt` on `$PATH`, or point `WASMOPT` at it): TinyGo's `wasi-legacy` build mode post-processes with it.
 
-Up to date required versions can be found looking at [`minGoVersion` and `tinygoMinorVersion` variables](./magefiles/magefile.go).
+Up to date required versions can be found looking at [`minGoVersion` and `minTinygoVersion` variables](./magefiles/magefile.go).
+
+### Toolchain pinning
+
+This fork builds coraza v3.8.1, which raises the requirements over upstream:
+
+| | Version | Why |
+| --- | --- | --- |
+| Go | 1.25.x | coraza v3.8.1 requires `go >= 1.25.0` |
+| TinyGo | 0.39.0 | 0.34 bundles Go 1.23 and cannot compile coraza 3.8.1; 0.41.x builds but dies in `runtime.initAll` at `_start` (`out of bounds memory access`); 0.42.0+/Go 1.26+ fail to build because `time.AfterFunc` starts a goroutine and `-buildmode=wasi-legacy` requires `-scheduler=none` |
+
+The wasm keeps the C engines (`@rx`/`@pm`/`@detectXSS`) by building
+[coraza-wasilibs](https://github.com/corazawaf/coraza-wasilibs)' operator archives from
+the sources vendored in [`third_party/`](./third_party) (a Rust `regex` backend behind a
+cre2-shaped ABI, plus a wasi-sdk build of libinjection), by using TinyGo's built-in
+`-gc=boehm` allocator instead of the archived `nottinygc`, and by registering the
+plugin's callbacks in `init()`.
+
+[`internal/auditlog/json_safe.go`](./internal/auditlog/json_safe.go) implements the
+`json` audit log format without `encoding/json`: with this toolchain, encoding/json traps
+the wasm module, which would kill the filter as soon as a rule matched with
+`SecAuditEngine` enabled. Its output is byte-for-byte identical to coraza's formatter,
+asserted by tests that run the same audit logs through both.
+
+### Releases
+
+[`release.yml`](./.github/workflows/release.yml) builds, gates (lint, unit tests, go-ftw
+against Envoy) and publishes a release from the same run:
+
+```bash
+gh workflow run release.yml --ref coraza-3.8.1 -f version=v0.7.0 -f publish=true
+```
 
 ### Building the filter
 
