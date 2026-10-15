@@ -140,7 +140,7 @@ jobs:
       - name: Write release notes
         run: |
           coraza_version=$(go list -m -f '{{.Version}}' github.com/corazawaf/coraza/v3)
-          crs_version=$(grep -o 'OWASP_CRS/[0-9.]*' wasmplugin/rules/crs/REQUEST-901-INITIALIZATION.conf | head -1)
+          crs_version=$(grep -o 'SecComponentSignature "OWASP_CRS/[0-9.]*"' wasmplugin/rules/crs/REQUEST-901-INITIALIZATION.conf | head -1 | grep -o 'OWASP_CRS/[0-9.]*')
           baseline=$(git rev-parse HEAD)
 
           cat > notes.md <<EOF
