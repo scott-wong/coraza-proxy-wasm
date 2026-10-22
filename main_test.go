@@ -155,7 +155,7 @@ func TestLifecycle(t *testing.T) {
 		{
 			name: "HTTP pseudo-headers are not exposed as request headers",
 			inlineRules: `
-			SecRuleEngine On\nSecRule REQUEST_HEADERS_NAMES "@rx ^:" "id:101,phase:1,deny"
+			SecRuleEngine On\nSecRule REQUEST_HEADERS_NAMES \"@rx ^:\" \"id:101,phase:1,deny\"
 			`,
 			requestHdrsAction:  types.ActionContinue,
 			requestBodyAction:  types.ActionContinue,
