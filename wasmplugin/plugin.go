@@ -339,6 +339,13 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 	}
 
 	for _, h := range hs {
+		// HTTP pseudo-headers are not regular request headers. Their values
+		// are already exposed through REQUEST_METHOD, REQUEST_URI, and
+		// SERVER_NAME. Passing them through again causes CRS rules that
+		// inspect REQUEST_HEADERS to rescan the URI (for example, 941120).
+		if strings.HasPrefix(h[0], ":") {
+			continue
+		}
 		tx.AddRequestHeader(h[0], h[1])
 	}
 

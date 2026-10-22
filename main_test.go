@@ -153,6 +153,17 @@ func TestLifecycle(t *testing.T) {
 			respondedNullBody:  false,
 		},
 		{
+			name: "HTTP pseudo-headers are not exposed as request headers",
+			inlineRules: `
+			SecRuleEngine On\nSecRule REQUEST_HEADERS_NAMES "@rx ^:" "id:101,phase:1,deny"
+			`,
+			requestHdrsAction:  types.ActionContinue,
+			requestBodyAction:  types.ActionContinue,
+			responseHdrsAction: types.ActionContinue,
+			responded403:       false,
+			respondedNullBody:  false,
+		},
+		{
 			name: "request header name denied",
 			inlineRules: `
 			SecRuleEngine On\nSecRule REQUEST_HEADERS_NAMES \"@streq user-agent\" \"id:101,phase:1,t:lowercase,deny\"
