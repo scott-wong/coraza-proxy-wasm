@@ -65,7 +65,7 @@ asserted by tests that run the same audit logs through both.
 against Envoy) and publishes a release from the same run:
 
 ```bash
-gh workflow run release.yml --ref coraza-3.8.1 -f version=v0.7.0 -f publish=true
+gh workflow run release.yml --ref coraza-3.8.1 -f version=v0.8.0 -f publish=true
 ```
 
 ### Building the filter
